@@ -58,10 +58,16 @@ std::wstring guid_to_tring(GUID &uuid) {
 	return ret;
 }
 
-void write_implementation(const std::wstring &reqIface, std::set<std::wstring> &implementedInterfaces, ITypeLib *tlib, std::wostream &output) {
-	if (implementedInterfaces.find(reqIface) == implementedInterfaces.end()) {
+std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &implementedInterfaces, ITypeInfo *tinfo, std::wostream &output) 
+{
+	ITypeInfo *reftinfo;
+	tinfo->GetRefTypeInfo(reftype, &reftinfo);
+	BSTR name;
+	reftinfo->GetDocumentation(MEMBERID_NIL, &name, NULL, NULL, NULL);
+	std::wstring ret(name);
+	if (implementedInterfaces.find(name) == implementedInterfaces.end()) {
 		// stock implementations
-		if (reqIface == L"IUnknown") {
+		if (0 == ::lstrcmpW(name, L"IUnknown")) {
 			output << L"template <typename T>" << std::endl
 				<< L"class IUnknownImpl: public T {" << std::endl
 				<< "\tULONG _refcount;" << std::endl
@@ -79,20 +85,87 @@ void write_implementation(const std::wstring &reqIface, std::set<std::wstring> &
 			implementedInterfaces.emplace(L"IUnknown");
 		}
 		else {
-			// obtain the base types and implement them
-			std::set<std::wstring> base_types;
-			tlib->FindName()
+			// first make sure to have the base type implementations
+			TYPEATTR *prefattr;
+			reftinfo->GetTypeAttr(&prefattr);
+			std::set<std::wstring> baseTypes;
+			for (auto impl_idx = 0; impl_idx < prefattr->cImplTypes; impl_idx++) {
+				HREFTYPE baseref;
+				reftinfo->GetRefTypeOfImplType(impl_idx, &baseref);
+				baseTypes.emplace(write_implementation(baseref, implementedInterfaces, reftinfo, output));
+			}
 
-			write_implementation(L"IUnknown", implementedInterfaces, tinfo, output);
-			output 
+			output
 				<< L"template <typename T>" << std::endl
-				<< L"class IDispatchImpl: public IUnknown<T> {" << std::endl
-				<< L"public:" << std::endl
-				<< IDispatch
+				<< L"class " << name << L"Impl";
+			if (baseTypes.size()) {
+				output << L":";
+				auto writtensome = false;
+				for (auto btype : baseTypes) {
+					if (writtensome)
+						output << L", ";
+					else
+						writtensome = true;
+					output << L" public " << btype << L"Impl<T>";
+				}
+			}
+			output << L" {" << std::endl;
+			output << L"};" << std::endl;
+
+			implementedInterfaces.emplace(name);
+			reftinfo->ReleaseTypeAttr(prefattr);
 		}
 	}
+	::SysFreeString(name);
+	reftinfo->Release();
+	return ret;
 }
 
+void describe_function(int fn_idx, std::set<ULONG>& knownDispIDs, std::set<std::wstring> &fwdRefs, std::set<std::wstring> &knownTypes, ITypeInfo *tinfo, std::wostream &buff) {
+	FUNCDESC *pFuncDesc;
+	tinfo->GetFuncDesc(fn_idx, &pFuncDesc);
+	BSTR names[20];
+	UINT cNames = 20;
+	tinfo->GetNames(pFuncDesc->memid, names, cNames, &cNames);
+
+	if (knownDispIDs.find(pFuncDesc->memid) == knownDispIDs.end())
+	{
+		buff << "\tvirtual HRESULT ";
+
+		if (pFuncDesc->callconv == CC_STDCALL) {
+			buff << "__stdcall ";
+		}
+		if (pFuncDesc->invkind == INVOKE_PROPERTYGET) {
+			buff << "get_";
+		}
+		else if (pFuncDesc->invkind == INVOKE_PROPERTYPUT) {
+			buff << "put_";
+		}
+		buff << names[0] << L" (";
+		for (auto paramidx = 0; paramidx < pFuncDesc->cParams; paramidx++) {
+			if (paramidx > 0) {
+				buff << ", ";
+			}
+			auto ptdesc = &pFuncDesc->lprgelemdescParam[paramidx].tdesc;
+			describe_type(fwdRefs, knownTypes, ptdesc, buff, tinfo);
+			buff << L" " << names[paramidx + 1];
+		}
+		if (pFuncDesc->elemdescFunc.tdesc.vt != VT_VOID) {
+			if (pFuncDesc->cParams)
+				buff << ", ";
+			buff << "/*[retval]*/ ";
+			describe_type(fwdRefs, knownTypes, &pFuncDesc->elemdescFunc.tdesc, buff, tinfo);
+			buff << L" *" << names[0];
+		}
+
+		buff << ") " ;
+		//pFuncDesc->lprgelemdescParam[]
+		for (auto stridx = 0; stridx < cNames; stridx++) {
+			::SysFreeString(names[stridx]);
+		}
+	}
+	tinfo->ReleaseFuncDesc(pFuncDesc);
+}
 
 int main(int argc, const char *argv[])
 {
@@ -201,7 +274,7 @@ int main(int argc, const char *argv[])
 					std::wstringstream buff;
 
 					std::set<std::wstring> fwdRefs;
-					std::set<std::wstring> requiredInterfaces;
+					std::set<HREFTYPE> requiredInterfaces;
 
 					auto derived_start_offset = 0;
 					auto close_braces = true;
@@ -259,8 +332,8 @@ int main(int argc, const char *argv[])
 								tinfo->GetRefTypeInfo(reftype, &reftinfo);
 								BSTR basename;
 								reftinfo->GetDocumentation(MEMBERID_NIL, &basename, NULL, NULL, NULL);
-								buff << L" public " << basename;
-								requiredInterfaces.emplace(basename);
+								buff << L" public " << basename << L"Impl<" << basename << L">";
+								requiredInterfaces.emplace(reftype);
 								reftinfo->Release();
 							}
 						}
@@ -307,49 +380,8 @@ int main(int argc, const char *argv[])
 					}
 
 					for (auto fn_idx = derived_start_offset; fn_idx < attr->cFuncs; fn_idx++) {
-						FUNCDESC *pFuncDesc;
-						tinfo->GetFuncDesc(fn_idx, &pFuncDesc);
-						BSTR names[20];
-						UINT cNames = 20;
-						tinfo->GetNames(pFuncDesc->memid, names, cNames, &cNames);
-
-						if (knownDispIDs.find(pFuncDesc->memid) == knownDispIDs.end())
-						{
-							buff << "\tvirtual HRESULT ";
-
-							if (pFuncDesc->callconv == CC_STDCALL) {
-								buff << "__stdcall ";
-							}
-							if (pFuncDesc->invkind == INVOKE_PROPERTYGET) {
-								buff << "get_";
-							}
-							else if (pFuncDesc->invkind == INVOKE_PROPERTYPUT) {
-								buff << "put_";
-							}
-							buff << names[0] << L" (";
-							for (auto paramidx = 0; paramidx < pFuncDesc->cParams; paramidx++) {
-								if (paramidx > 0) {
-									buff << ", ";
-								}
-								auto ptdesc = &pFuncDesc->lprgelemdescParam[paramidx].tdesc;
-								describe_type(fwdRefs, knownTypes, ptdesc, buff, tinfo);
-								buff << L" " << names[paramidx + 1];
-							}
-							if (pFuncDesc->elemdescFunc.tdesc.vt != VT_VOID) {
-								if (pFuncDesc->cParams)
-									buff << ", ";
-								buff << "/*[retval]*/ ";
-								describe_type(fwdRefs, knownTypes, &pFuncDesc->elemdescFunc.tdesc, buff, tinfo);
-								buff << L" *" << names[0];
-							}
-
-							buff << ") = 0;" << std::endl << std::flush;
-							//pFuncDesc->lprgelemdescParam[]
-							for (auto stridx = 0; stridx < cNames; stridx++) {
-								::SysFreeString(names[stridx]);
-							}
-						}
-						tinfo->ReleaseFuncDesc(pFuncDesc);
+						describe_function(fn_idx, knownDispIDs, fwdRefs, knownTypes, tinfo, buff);
+						buff << L" = 0;" << std::endl;
 					}
 
 					for (auto v_idx = 0; v_idx < attr->cVars; v_idx++) {
