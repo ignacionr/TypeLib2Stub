@@ -197,10 +197,21 @@ std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &impl
 				}
 			}
 			output << L" {" << std::endl;
+			output << "protected:" << std::endl
+				<< "\tvirtual bool IsSupported(const IID& riid) override { return riid == __uuidof("
+				<< name
+				<< ") ";
+			for (auto btype : baseTypes) {
+				output << "|| "<< btype << "Impl<T>::IsSupported(riid)";
+			}
+			output << "; }" << std::endl
+				<< "public:" << std::endl;
 			std::set<std::wstring> fwdRefs, knownTypes;
 			for (auto idx = 0; idx < prefattr->cFuncs; idx++) {
 				if (describe_function(idx, knownDispIDs, fwdRefs, knownTypes, reftinfo, output))
-					output << L" { return E_NOTIMPL; }" << std::endl;
+					output
+					<< (prefattr->typekind == TKIND_DISPATCH ? "" : " override")
+					<< L" {\n\t\treturn E_NOTIMPL;\n\t}" << std::endl;
 			}
 			output << L"};" << std::endl;
 
