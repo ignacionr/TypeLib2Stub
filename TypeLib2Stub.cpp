@@ -58,7 +58,68 @@ std::wstring guid_to_tring(GUID &uuid) {
 	return ret;
 }
 
-std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &implementedInterfaces, ITypeInfo *tinfo, std::wostream &output) 
+bool describe_function(int fn_idx, std::set<ULONG>& knownDispIDs, std::set<std::wstring> &fwdRefs, std::set<std::wstring> &knownTypes, ITypeInfo *tinfo, std::wostream &buff) {
+	FUNCDESC *pFuncDesc;
+	tinfo->GetFuncDesc(fn_idx, &pFuncDesc);
+	BSTR names[20];
+	UINT cNames = 20;
+	tinfo->GetNames(pFuncDesc->memid, names, cNames, &cNames);
+	if (::lstrcmpW(L"url", names[0]) == 0) {
+		::lstrcpyW(names[0], L"URL");
+	}
+	auto ret = false;
+
+	if (knownDispIDs.find(pFuncDesc->memid) == knownDispIDs.end())
+	{
+		ret = true;
+		buff << "\tvirtual HRESULT ";
+
+		if (pFuncDesc->callconv == CC_STDCALL) {
+			buff << "__stdcall ";
+		}
+		auto is_property = false;
+		if (pFuncDesc->invkind == INVOKE_PROPERTYGET) {
+			buff << "get_";
+			is_property = true;
+		}
+		else if (pFuncDesc->invkind == INVOKE_PROPERTYPUT) {
+			buff << "put_";
+			is_property = true;
+		}
+		else if (pFuncDesc->invkind == INVOKE_PROPERTYPUTREF) {
+			buff << "put_";
+			is_property = true;
+		}
+		buff << names[0] << L" (";
+		for (auto paramidx = 0; paramidx < pFuncDesc->cParams; paramidx++) {
+			if (paramidx > 0) {
+				buff << ", ";
+			}
+			auto ptdesc = &pFuncDesc->lprgelemdescParam[paramidx].tdesc;
+			describe_type(fwdRefs, knownTypes, ptdesc, buff, tinfo);
+			auto name_idx = (paramidx + (is_property ? 0 : 1)) % cNames;
+			buff << L" " << names[name_idx];
+		}
+		if (pFuncDesc->elemdescFunc.tdesc.vt != VT_VOID &&
+			pFuncDesc->elemdescFunc.tdesc.vt != VT_HRESULT) {
+			if (pFuncDesc->cParams)
+				buff << ", ";
+			buff << "/*[retval]*/ ";
+			describe_type(fwdRefs, knownTypes, &pFuncDesc->elemdescFunc.tdesc, buff, tinfo);
+			buff << L" *retval";
+		}
+
+		buff << ") " ;
+		//pFuncDesc->lprgelemdescParam[]
+		for (auto stridx = 0; stridx < cNames; stridx++) {
+			::SysFreeString(names[stridx]);
+		}
+	}
+	tinfo->ReleaseFuncDesc(pFuncDesc);
+	return ret;
+}
+
+std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &implementedInterfaces, ITypeInfo *tinfo, std::set<ULONG> knownDispIDs, std::wostream &output) 
 {
 	ITypeInfo *reftinfo;
 	tinfo->GetRefTypeInfo(reftype, &reftinfo);
@@ -75,14 +136,40 @@ std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &impl
 				<< "\tvirtual bool IsSupported(const IID& riid) { return riid == __uuidof(IUnknown); }" << std::endl
 				<< "public:" << std::endl
 				<< "\tIUnknownImpl() : _refcount(1L) {}" << std::endl
-				<< "\tvirtual HRESULT __stdcall QueryInterface(const IID &riid, void **ppv) {" << std::endl
+				<< "\tvirtual HRESULT __stdcall QueryInterface(const IID &riid, void **ppv) override {" << std::endl
 				<< "\t\tif (IsSupported(riid)) { *ppv = this; AddRef(); return S_OK; }" << std::endl
 				<< "\t\treturn E_NOINTERFACE;" << std::endl
 				<< "\t}" << std::endl
-				<< "\tvirtual ULONG __stdcall AddRef() { return ++_refcount; }" << std::endl
-				<< "\tvirtual ULONG __stdcall Release() { if (0 >= --_refcount) { delete this; return 0; } return _refcount; }" << std::endl
+				<< "\tvirtual ULONG __stdcall AddRef() override { return ++_refcount; }" << std::endl
+				<< "\tvirtual ULONG __stdcall Release() override { if (0 >= --_refcount) { delete this; return 0; } return _refcount; }" << std::endl
 				<< "};" << std::endl;
 			implementedInterfaces.emplace(L"IUnknown");
+		}
+		else if (0 == ::lstrcmpW(name, L"IDispatch")) {
+			// first make sure to have the base type implementations
+			TYPEATTR *prefattr;
+			reftinfo->GetTypeAttr(&prefattr);
+			std::set<std::wstring> baseTypes;
+			for (auto impl_idx = 0; impl_idx < prefattr->cImplTypes; impl_idx++) {
+				HREFTYPE baseref;
+				reftinfo->GetRefTypeOfImplType(impl_idx, &baseref);
+				baseTypes.emplace(write_implementation(baseref, implementedInterfaces, reftinfo, knownDispIDs, output));
+			}
+			output << L"template <typename T>" << std::endl
+				<< L"class IDispatchImpl: public IUnknownImpl<T> {" << std::endl
+				<< "protected:" << std::endl
+				<< "\tvirtual bool IsSupported(const IID& riid) override { return riid == __uuidof(IDispatch) || IUnknownImpl<T>::IsSupported(riid); }" << std::endl
+				<< "public:" << std::endl
+				<< "virtual HRESULT STDMETHODCALLTYPE GetTypeInfoCount(__RPC__out UINT *pctinfo)"
+				<< " { return E_NOTIMPL; }" << std::endl
+				<< "virtual HRESULT STDMETHODCALLTYPE GetTypeInfo( UINT iTInfo,LCID lcid, __RPC__deref_out_opt ITypeInfo **ppTInfo)"
+				<< " { return E_NOTIMPL; }" << std::endl
+				<< "virtual HRESULT STDMETHODCALLTYPE GetIDsOfNames( __RPC__in REFIID riid,__RPC__in_ecount_full(cNames) LPOLESTR *rgszNames, __RPC__in_range(0, 16384) UINT cNames,LCID lcid, __RPC__out_ecount_full(cNames) DISPID *rgDispId)"
+				<< " { return E_NOTIMPL; }" << std::endl
+				<< "virtual /* [local] */ HRESULT STDMETHODCALLTYPE Invoke(_In_  DISPID dispIdMember,_In_  REFIID riid,_In_  LCID lcid,_In_  WORD wFlags,_In_  DISPPARAMS *pDispParams,_Out_opt_  VARIANT *pVarResult,_Out_opt_  EXCEPINFO *pExcepInfo,_Out_opt_  UINT *puArgErr)"
+				<< " { return E_NOTIMPL; }" << std::endl
+				<< "};" << std::endl;
+			implementedInterfaces.emplace(L"IDispatch");
 		}
 		else {
 			// first make sure to have the base type implementations
@@ -92,7 +179,7 @@ std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &impl
 			for (auto impl_idx = 0; impl_idx < prefattr->cImplTypes; impl_idx++) {
 				HREFTYPE baseref;
 				reftinfo->GetRefTypeOfImplType(impl_idx, &baseref);
-				baseTypes.emplace(write_implementation(baseref, implementedInterfaces, reftinfo, output));
+				baseTypes.emplace(write_implementation(baseref, implementedInterfaces, reftinfo, knownDispIDs, output));
 			}
 
 			output
@@ -110,6 +197,11 @@ std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &impl
 				}
 			}
 			output << L" {" << std::endl;
+			std::set<std::wstring> fwdRefs, knownTypes;
+			for (auto idx = 0; idx < prefattr->cFuncs; idx++) {
+				if (describe_function(idx, knownDispIDs, fwdRefs, knownTypes, reftinfo, output))
+					output << L" { return E_NOTIMPL; }" << std::endl;
+			}
 			output << L"};" << std::endl;
 
 			implementedInterfaces.emplace(name);
@@ -121,51 +213,6 @@ std::wstring write_implementation(HREFTYPE reftype, std::set<std::wstring> &impl
 	return ret;
 }
 
-void describe_function(int fn_idx, std::set<ULONG>& knownDispIDs, std::set<std::wstring> &fwdRefs, std::set<std::wstring> &knownTypes, ITypeInfo *tinfo, std::wostream &buff) {
-	FUNCDESC *pFuncDesc;
-	tinfo->GetFuncDesc(fn_idx, &pFuncDesc);
-	BSTR names[20];
-	UINT cNames = 20;
-	tinfo->GetNames(pFuncDesc->memid, names, cNames, &cNames);
-
-	if (knownDispIDs.find(pFuncDesc->memid) == knownDispIDs.end())
-	{
-		buff << "\tvirtual HRESULT ";
-
-		if (pFuncDesc->callconv == CC_STDCALL) {
-			buff << "__stdcall ";
-		}
-		if (pFuncDesc->invkind == INVOKE_PROPERTYGET) {
-			buff << "get_";
-		}
-		else if (pFuncDesc->invkind == INVOKE_PROPERTYPUT) {
-			buff << "put_";
-		}
-		buff << names[0] << L" (";
-		for (auto paramidx = 0; paramidx < pFuncDesc->cParams; paramidx++) {
-			if (paramidx > 0) {
-				buff << ", ";
-			}
-			auto ptdesc = &pFuncDesc->lprgelemdescParam[paramidx].tdesc;
-			describe_type(fwdRefs, knownTypes, ptdesc, buff, tinfo);
-			buff << L" " << names[paramidx + 1];
-		}
-		if (pFuncDesc->elemdescFunc.tdesc.vt != VT_VOID) {
-			if (pFuncDesc->cParams)
-				buff << ", ";
-			buff << "/*[retval]*/ ";
-			describe_type(fwdRefs, knownTypes, &pFuncDesc->elemdescFunc.tdesc, buff, tinfo);
-			buff << L" *" << names[0];
-		}
-
-		buff << ") " ;
-		//pFuncDesc->lprgelemdescParam[]
-		for (auto stridx = 0; stridx < cNames; stridx++) {
-			::SysFreeString(names[stridx]);
-		}
-	}
-	tinfo->ReleaseFuncDesc(pFuncDesc);
-}
 
 int main(int argc, const char *argv[])
 {
@@ -177,7 +224,7 @@ int main(int argc, const char *argv[])
 	_var_type_name[VT_EMPTY] = L"?";
 	_var_type_name[VT_NULL] = L"NULL";
 	_var_type_name[VT_I2] = L"short";
-	_var_type_name[VT_I4] = L"int";
+	_var_type_name[VT_I4] = L"long";
 	_var_type_name[VT_R4] = L"float";
 	_var_type_name[VT_R8] = L"double";
 	_var_type_name[VT_CY] = L"currency?";
@@ -380,8 +427,8 @@ int main(int argc, const char *argv[])
 					}
 
 					for (auto fn_idx = derived_start_offset; fn_idx < attr->cFuncs; fn_idx++) {
-						describe_function(fn_idx, knownDispIDs, fwdRefs, knownTypes, tinfo, buff);
-						buff << L" = 0;" << std::endl;
+						if (describe_function(fn_idx, knownDispIDs, fwdRefs, knownTypes, tinfo, buff))
+							buff << L" = 0;" << std::endl;
 					}
 
 					for (auto v_idx = 0; v_idx < attr->cVars; v_idx++) {
@@ -408,7 +455,7 @@ int main(int argc, const char *argv[])
 					}
 
 					for (auto reqIface : requiredInterfaces) {
-						write_implementation(reqIface, implementedInterfaces, tinfo, std::wcout);
+						write_implementation(reqIface, implementedInterfaces, tinfo, knownDispIDs, std::wcout);
 					}
 
 					std::wcout << buff.str().c_str();
