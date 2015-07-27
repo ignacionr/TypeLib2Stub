@@ -284,16 +284,18 @@ int main(int argc, const char *argv[])
 	knownTypes.emplace(L"XMLDOMDocumentEvents");
 
 	std::set<ULONG> knownDispIDs;
-	knownDispIDs.emplace(0x60000000);
+	knownDispIDs.emplace(0x60000000); // IUnknown
 	knownDispIDs.emplace(0x60000001);
 	knownDispIDs.emplace(0x60000002);
-	knownDispIDs.emplace(0x60010000);
+	knownDispIDs.emplace(0x60010000); // IDispatch
 	knownDispIDs.emplace(0x60010001);
 	knownDispIDs.emplace(0x60010002);
 	knownDispIDs.emplace(0x60010003);
 	knownDispIDs.emplace(0x60010004);
 
 	std::set<std::wstring> implementedInterfaces;
+	std::set<std::wstring> coclasses;
+	std::map<std::wstring, std::set<std::wstring>> inheritance;
 
 	std::wstring wname(argv[1], argv[1] + ::lstrlenA(argv[1]));
 	ITypeLib *tlib;
@@ -347,6 +349,7 @@ int main(int argc, const char *argv[])
 								tinfo->GetRefTypeInfo(reftype, &reftinfo);
 								BSTR basename;
 								reftinfo->GetDocumentation(MEMBERID_NIL, &basename, NULL, NULL, NULL);
+								inheritance[name].emplace(basename);
 								buff << L" public " << basename;
 								TYPEATTR *pBaseAttr;
 								reftinfo->GetTypeAttr(&pBaseAttr);
@@ -359,6 +362,7 @@ int main(int argc, const char *argv[])
 						buff << "{" << std::endl;
 					}
 					else if (attr->typekind == TKIND_COCLASS) {
+						coclasses.emplace(name);
 						buff << L" /* " << (doc ? doc : L"(no documentation)") << L" */" << std::endl;
 						buff << L"class ";
 						if (attr->guid != GUID_NULL) {
@@ -379,6 +383,7 @@ int main(int argc, const char *argv[])
 								tinfo->GetRefTypeInfo(reftype, &reftinfo);
 								BSTR basename;
 								reftinfo->GetDocumentation(MEMBERID_NIL, &basename, NULL, NULL, NULL);
+								inheritance[name].emplace(basename);
 								buff << L" public " << basename << L"Impl<" << basename << L">";
 								requiredInterfaces.emplace(reftype);
 								reftinfo->Release();
@@ -409,6 +414,7 @@ int main(int argc, const char *argv[])
 								tinfo->GetRefTypeInfo(reftype, &reftinfo);
 								BSTR basename;
 								reftinfo->GetDocumentation(MEMBERID_NIL, &basename, NULL, NULL, NULL);
+								inheritance[name].emplace(basename);
 								buff << L" public " << basename;
 								reftinfo->Release();
 							}
