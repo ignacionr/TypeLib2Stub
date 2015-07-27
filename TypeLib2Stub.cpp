@@ -483,10 +483,27 @@ int main(int argc, const char *argv[])
 				tinfo->Release();
 			}
 		}
+
+		std::wcout << "template <typename T> struct StubClassFactory: public IUnknownImpl<IClassFactory> {" << std::endl;
+		std::wcout << "\tHRESULT __stdcall CreateInstance(IUnknown *pUnkOuter, REFIID riid, void **ppv) override { if (pUnkOuter) return CLASS_E_NOAGGREGATION; *ppv = new T(); return S_OK; }" << std::endl;
+		std::wcout << L"\tHRESULT __stdcall LockServer (BOOL fLock) override { return S_OK; }" << std::endl;
+		std::wcout << "};" << std::endl;
+
+		// now write the DllGetClassObject function
+		std::wcout << std::endl << "HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv) {\n\t";
+		for(auto cc : coclasses) {
+			std::wcout << "if (rclsid == __uuidof(Stub" << cc.c_str() << ")) {" << std::endl
+				<< "\t\t*ppv = new StubClassFactory<Stub" << cc.c_str() << ">(); }" << std::endl
+				<< "\telse ";
+		}
+		std::wcout << " {\n\t\treturn REGDB_E_CLASSNOTREG;}" << std::endl;
+		std::wcout << "\treturn S_OK;" << std::endl <<
+			"}" << std::endl;
+
 		tlib->Release();
 	}
 	else {
-		std::wcout << L"Unable to open " <<
+		std::wcerr << L"Unable to open " <<
 			wname.c_str() <<
 			L" error " << hr;
 	}
