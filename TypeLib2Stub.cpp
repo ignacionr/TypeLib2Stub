@@ -87,7 +87,7 @@ bool describe_function(int fn_idx, std::set<ULONG>& knownDispIDs, std::set<std::
 			is_property = true;
 		}
 		else if (pFuncDesc->invkind == INVOKE_PROPERTYPUTREF) {
-			buff << "put_";
+			buff << "putref_";
 			is_property = true;
 		}
 		buff << names[0] << L" (";
@@ -260,6 +260,13 @@ int main(int argc, const char *argv[])
 	_var_type_name[VT_PTR] = L"void *";
 
 	std::set<std::wstring> knownTypes;
+	knownTypes.emplace(L"IErrorInfo");
+	knownTypes.emplace(L"IStream");
+	knownTypes.emplace(L"ISequentialStream");
+	knownTypes.emplace(L"_LARGE_INTEGER");
+	knownTypes.emplace(L"_ULARGE_INTEGER");
+	knownTypes.emplace(L"tagSTATSTG");
+	knownTypes.emplace(L"_FILETIME");
 	knownTypes.emplace(L"IXMLDOMImplementation");
 	knownTypes.emplace(L"IXMLDOMNode");
 	knownTypes.emplace(L"tagDOMNodeType");
